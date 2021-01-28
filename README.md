@@ -20,3 +20,19 @@ The following command-line options are available:
   * Print the pg_reset_page_lsn version and exit.
 * -?, --help
   * Show help about pg_reset_page_lsn command line arguments, and exit.
+
+## Install
+Download the source archive of pg_reset_page_lsn from [here](https://github.com/MasaoFujii/pg_reset_page_lsn), and then build and install it.
+
+    $ cd pg_reset_page_lsn
+    $ make USE_PGXS=1 PG_CONFIG=/opt/pgsql-X.Y.Z/bin/pg_config
+    $ su
+    # make USE_PGXS=1 PG_CONFIG=/opt/pgsql-X.Y.Z/bin/pg_config install
+    # exit
+
+USE_PGXS=1 must be always specified when building pg_reset_page_lsn. The path to [pg_config](http://www.postgresql.org/docs/devel/static/app-pgconfig.html) (which exists in the bin directory of PostgreSQL installation) needs be specified in PG_CONFIG. However, if the PATH environment variable contains the path to pg_config, PG_CONFIG doesn't need to be specified.
+
+## Example
+Find all the relation files in the tablespace directory and reset the LSN of every pages in them to the LSN `0/327B9A0`.
+
+    $ pg_reset_page_lsn -D data/pg_tblspc/16384/ -l 0/327B9A0
