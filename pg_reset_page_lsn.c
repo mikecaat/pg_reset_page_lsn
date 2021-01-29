@@ -4,12 +4,14 @@
 #include <sys/stat.h>
 
 #include "access/xlogdefs.h"
+#include "common/file_utils.h"
 #include "common/logging.h"
 #include "getopt_long.h"
 #include "storage/bufpage.h"
 
 static const char *progname;
 static XLogRecPtr	lsn = InvalidXLogRecPtr;
+static bool	do_sync = false;
 
 static XLogRecPtr	pg_lsn_in_internal(const char *str, bool *have_error);
 static void	scan_directory(const char *path);
@@ -25,6 +27,7 @@ usage(void)
 	printf(_("\nOptions:\n"));
 	printf(_("  -D, --directory=DIR      database directory to find relation files\n"));
 	printf(_("  -l, --lsn=LSN            reset LSN in relation pages\n"));
+	printf(_("  -N, --no-sync            do not wait for changes to be written safely to disk\n"));
 	printf(_("  -V, --version            output version information, then exit\n"));
 	printf(_("  -?, --help               show this help, then exit\n"));
 }
@@ -234,6 +237,7 @@ main(int argc, char *argv[])
 	static struct option long_options[] = {
 		{"directory", required_argument, NULL, 'D'},
 		{"lsn", required_argument, NULL, 'l'},
+		{"no-sync", no_argument, NULL, 'N'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -261,7 +265,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "D:l:", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "D:l:N", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -270,6 +274,9 @@ main(int argc, char *argv[])
 				break;
 			case 'l':
 				lsn_str = pg_strdup(optarg);
+				break;
+			case 'N':
+				do_sync = false;
 				break;
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -319,6 +326,10 @@ main(int argc, char *argv[])
 
 	canonicalize_path(datadir);
 	scan_directory(datadir);
+
+	/* Make the data durable on disk */
+	if (do_sync)
+		fsync_dir_recurse(datadir);
 
 	return 0;
 }

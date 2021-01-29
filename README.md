@@ -16,6 +16,8 @@ The following command-line options are available:
   * Specifies the directory where relation files are stored.
 * -l, --lsn=LSN
   * Specifies LSN that pg_reset_page_lsn resets page LSN to.
+* -N, --no-sync
+  * By default, pg_reset_page_lsn will wait for all files to be written safely to disk. This option causes pg_reset_page_lsn to return without waiting, which is faster, but means that a subsequent operating system crash can leave the updated data directory corrupt. Generally, this option is useful for testing but should not be used on a production installation.
 * -V, --version
   * Print the pg_reset_page_lsn version and exit.
 * -?, --help
