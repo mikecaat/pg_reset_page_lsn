@@ -36,7 +36,7 @@ jobs:
         make -j 2
         make install
         initdb -D ${PGDATA} --locale=C --encoding=UTF8
-        pg_ctl -D ${PGDATA} -w start
+        pg_ctl -D ${PGDATA} -k -w start
     - name: before_script
       run: |
         cd ${GITHUB_WORKSPACE}
@@ -46,7 +46,7 @@ jobs:
       run: |
         pgbench -i -s 10 -d postgres
         pg_ctl -D ${PGDATA} stop
-        pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync
+        pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k
     - name: after_script_failure
       if: failure()
       run: |

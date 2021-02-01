@@ -8,14 +8,17 @@
 #include "common/logging.h"
 #include "getopt_long.h"
 #include "storage/bufpage.h"
+#include "storage/checksum.h"
+#include "storage/checksum_impl.h"
 
 static const char *progname;
 static XLogRecPtr	lsn = InvalidXLogRecPtr;
+static bool	data_checksums = false;
 static bool	do_sync = false;
 
 static XLogRecPtr	pg_lsn_in_internal(const char *str, bool *have_error);
 static void	scan_directory(const char *path);
-static void	scan_file(const char *fn);
+static void	scan_file(const char *fn, BlockNumber segmentno);
 static bool	skipfile(const char *fn);
 
 static void
@@ -27,6 +30,7 @@ usage(void)
 	printf(_("\nOptions:\n"));
 	printf(_("  -D, --directory=DIR      database directory to find relation files\n"));
 	printf(_("  -l, --lsn=LSN            reset LSN in relation pages\n"));
+	printf(_("  -k, --data-checksums     update checksums in relation pages\n"));
 	printf(_("  -N, --no-sync            do not wait for changes to be written safely to disk\n"));
 	printf(_("  -V, --version            output version information, then exit\n"));
 	printf(_("  -?, --help               show this help, then exit\n"));
@@ -124,10 +128,34 @@ scan_directory(const char *path)
 
 		if (S_ISREG(st.st_mode))
 		{
+			char		fnonly[MAXPGPATH];
+			char		*segmentpath;
+			BlockNumber segmentno = 0;
+
 			if (skipfile(de->d_name))
 				continue;
 
-			scan_file(fn);
+			/*
+			 * Cut off at the segment boundary (".") to get the segment number
+			 * in order to mix it into the checksum.
+			 */
+			if (data_checksums)
+			{
+				strlcpy(fnonly, de->d_name, sizeof(fnonly));
+				segmentpath = strchr(fnonly, '.');
+				if (segmentpath != NULL)
+				{
+					*segmentpath++ = '\0';
+					segmentno = atoi(segmentpath);
+					if (segmentno == 0)
+					{
+						pg_log_error("invalid segment number %d in file name \"%s\"",
+									 segmentno, fn);
+						exit(1);
+					}
+				}
+			}
+			scan_file(fn, segmentno);
 		}
 		else if (S_ISDIR(st.st_mode))
 			scan_directory(fn);
@@ -137,9 +165,10 @@ scan_directory(const char *path)
 }
 
 static void
-scan_file(const char *fn)
+scan_file(const char *fn, BlockNumber segmentno)
 {
 	PGAlignedBlock buf;
+	PageHeader	header = (PageHeader) buf.data;
 	int			f;
 	BlockNumber blockno;
 
@@ -169,7 +198,19 @@ scan_file(const char *fn)
 			exit(1);
 		}
 
+		/* New pages have no page lsn yet */
+		if (PageIsNew(header))
+			continue;
+
+		/* Set page LSN in page header */
 		PageSetLSN(buf.data, lsn);
+
+		/* Set checksum in page header if requested */
+		if (data_checksums)
+		{
+			header->pd_checksum =
+				pg_checksum_page(buf.data, blockno + segmentno * RELSEG_SIZE);
+		}
 
 		/* Seek back to beginning of block */
 		if (lseek(f, -BLCKSZ, SEEK_CUR) < 0)
@@ -237,6 +278,7 @@ main(int argc, char *argv[])
 	static struct option long_options[] = {
 		{"directory", required_argument, NULL, 'D'},
 		{"lsn", required_argument, NULL, 'l'},
+		{"data-checksums", no_argument, NULL, 'k'},
 		{"no-sync", no_argument, NULL, 'N'},
 		{NULL, 0, NULL, 0}
 	};
@@ -265,7 +307,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "D:l:N", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "D:l:kN", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -274,6 +316,9 @@ main(int argc, char *argv[])
 				break;
 			case 'l':
 				lsn_str = pg_strdup(optarg);
+				break;
+			case 'k':
+				data_checksums = true;
 				break;
 			case 'N':
 				do_sync = false;
