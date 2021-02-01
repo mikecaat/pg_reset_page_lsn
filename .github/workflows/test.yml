@@ -33,10 +33,16 @@ jobs:
         cd postgres
         git checkout ${PGBRANCH}
         ./configure --prefix=${PGHOME} --enable-debug --enable-cassert
-        make -j 2
-        make install
-        initdb -D ${PGDATA} --locale=C --encoding=UTF8
-        pg_ctl -D ${PGDATA} -k -w start
+        make -j 2 -s
+        make -s install
+        cd contrib/pageinspect
+        make -s install
+        cd ../..
+        initdb -D ${PGDATA} -k --locale=C --encoding=UTF8
+        pg_ctl -D ${PGDATA} -w start
+        psql -d postgres -c "ALTER SYSTEM SET synchronous_commit TO off"
+        pg_ctl -D ${PGDATA} reload
+        make -s -j 2 installcheck
     - name: before_script
       run: |
         cd ${GITHUB_WORKSPACE}
@@ -44,9 +50,16 @@ jobs:
         make USE_PGXS=1 PG_CONFIG=${PGHOME}/bin/pg_config install
     - name: script
       run: |
-        pgbench -i -s 10 -d postgres
+        pgbench -i -Idtgv -s 100 regression
+        psql regression -f sql/func.sql
         pg_ctl -D ${PGDATA} stop
         pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k
+        pg_reset_page_lsn -D ${PGDATA}/global -l 0/1 --no-sync -k
+        pg_checksums -D ${PGDATA} -c
+        pg_ctl -D ${PGDATA} -w start
+        psql regression -c "SELECT verify_page_lsn()"
+        pgbench -c 2 -j 2 -T 10 regression
+        pg_ctl -D ${PGDATA} stop
     - name: after_script_failure
       if: failure()
       run: |
