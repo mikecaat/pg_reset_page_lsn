@@ -18,6 +18,9 @@ static bool data_checksums = false;
 static bool do_sync = false;
 static bool showprogress = false;
 
+static int64 files = 0;
+static int64 blocks = 0;
+
 static XLogRecPtr pg_lsn_in_internal(const char *str, bool *have_error);
 static int64 scan_directory(const char *path, bool sizeonly);
 static void scan_file(const char *fn, BlockNumber segmentno);
@@ -204,6 +207,8 @@ scan_file(const char *fn, BlockNumber segmentno)
 		exit(1);
 	}
 
+	files++;
+
 	for (blockno = 0;; blockno++)
 	{
 		int			r = read(f, buf.data, BLCKSZ);
@@ -224,6 +229,7 @@ scan_file(const char *fn, BlockNumber segmentno)
 		}
 
 		current_size += r;
+		blocks++;
 
 		/* New pages have no page lsn yet */
 		if (PageIsNew(header))
@@ -470,6 +476,10 @@ main(int argc, char *argv[])
 	/* Make the data durable on disk */
 	if (do_sync)
 		fsync_dir_recurse(datadir);
+
+	printf(_("Operation completed\n"));
+	printf(_("Files scanned:  %s\n"), psprintf(INT64_FORMAT, files));
+	printf(_("Blocks scanned: %s\n"), psprintf(INT64_FORMAT, blocks));
 
 	return 0;
 }
