@@ -136,7 +136,11 @@ scan_directory(const char *path, bool sizeonly)
 #else
 		else if (pgwin32_is_junction(fn))
 #endif
+		{
+			if (!sizeonly)
+				pg_log_warning("skipping scan of symlink \"%s\"", fn);
 			continue;
+		}
 
 		if (S_ISREG(st.st_mode))
 		{
