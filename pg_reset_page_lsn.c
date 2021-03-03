@@ -21,9 +21,15 @@ static bool showprogress = false;
 static int64 files = 0;
 static int64 blocks = 0;
 
+/* database cluster is specified as a target directory to scan? */
+static bool	pgdata_mode = false;
+
 static XLogRecPtr pg_lsn_in_internal(const char *str, bool *have_error);
-static int64 scan_directory(const char *path, bool sizeonly);
+static int64 scan_directory(const char *basedir, const char *subdir,
+							bool sizeonly);
 static void scan_file(const char *fn, BlockNumber segmentno);
+static int64 scan_pgdata(const char *basedir, bool sizeonly);
+static void validate_datadir(const char *datadir);
 static bool skipfile(const char *fn);
 static void progress_report(bool finished);
 
@@ -89,14 +95,36 @@ pg_lsn_in_internal(const char *str, bool *have_error)
 }
 
 static int64
-scan_directory(const char *path, bool sizeonly)
+scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 {
 	/* Copy and paste from src/include/storage/fd.h */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"
 #define PG_TEMP_FILE_PREFIX "pgsql_tmp"
 	int64		dirsize = 0;
+	char		path[MAXPGPATH];
+	bool		path_is_symlink = false;
 	DIR		   *dir;
 	struct dirent *de;
+	struct stat st;
+
+	if (subdir == NULL)
+		strncpy(path, basedir, sizeof(path));
+	else
+		snprintf(path, sizeof(path), "%s/%s", basedir, subdir);
+
+	/* Check if the current path indicates a symlink or not */
+#ifndef WIN32
+	if (lstat(path, &st) < 0)
+	{
+		pg_log_error("could not stat directory \"%s\": %m", path);
+		exit(1);
+	}
+	else if (S_ISLNK(st.st_mode))
+		path_is_symlink = true;
+#else
+	if (pgwin32_is_junction(path))
+		path_is_symlink = true;
+#endif
 
 	dir = opendir(path);
 	if (!dir)
@@ -108,7 +136,6 @@ scan_directory(const char *path, bool sizeonly)
 	while ((de = readdir(dir)) != NULL)
 	{
 		char		fn[MAXPGPATH];
-		struct stat st;
 
 		if (strcmp(de->d_name, ".") == 0 ||
 			strcmp(de->d_name, "..") == 0)
@@ -131,18 +158,6 @@ scan_directory(const char *path, bool sizeonly)
 		{
 			pg_log_error("could not stat file \"%s\": %m", fn);
 			exit(1);
-		}
-
-		/* Skip symlink */
-#ifndef WIN32
-		else if (S_ISLNK(st.st_mode))
-#else
-		else if (pgwin32_is_junction(fn))
-#endif
-		{
-			if (!sizeonly)
-				pg_log_warning("skipping scan of symlink \"%s\"", fn);
-			continue;
 		}
 
 		if (S_ISREG(st.st_mode))
@@ -184,8 +199,65 @@ scan_directory(const char *path, bool sizeonly)
 			if (!sizeonly)
 				scan_file(fn, segmentno);
 		}
-		else if (S_ISDIR(st.st_mode))
-			dirsize += scan_directory(fn, sizeonly);
+#ifndef WIN32
+		else if (S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
+#else
+		else if (S_ISDIR(st.st_mode) || pgwin32_is_junction(fn))
+#endif
+		{
+			/*
+			 * If going through the entries of pg_tblspc, we assume to operate
+			 * on tablespace locations where only TABLESPACE_VERSION_DIRECTORY
+			 * is valid, resolving the linked locations and dive into them
+			 * directly.
+			 */
+			if (subdir != NULL &&
+				strncmp("pg_tblspc", subdir, strlen("pg_tblspc")) == 0)
+			{
+				char		tblspc_path[MAXPGPATH];
+				struct stat tblspc_st;
+
+				/*
+				 * Resolve tablespace location path and check whether
+				 * TABLESPACE_VERSION_DIRECTORY exists.  Not finding a valid
+				 * location is unexpected, since there should be no orphaned
+				 * links and no links pointing to something else than a
+				 * directory.
+				 */
+				snprintf(tblspc_path, sizeof(tblspc_path), "%s/%s/%s",
+						 path, de->d_name, TABLESPACE_VERSION_DIRECTORY);
+
+				if (lstat(tblspc_path, &tblspc_st) < 0)
+				{
+					pg_log_error("could not stat file \"%s\": %m",
+								 tblspc_path);
+					exit(1);
+				}
+
+				/* Looks like a valid tablespace location */
+				dirsize += scan_directory(fn,
+										  TABLESPACE_VERSION_DIRECTORY,
+										  sizeonly);
+
+				/*
+				 * Issue fsync recursively on the tablespace location and
+				 * all its contents if requested. This is required here
+				 * because fsync_dir_recurse() that will be called at the end
+				 * of this program skips symlinks. But we don't need to do
+				 * that if we're scanning database cluster because
+				 * fsync_pgdata() will be called later.
+				 */
+				if (do_sync && path_is_symlink && !pgdata_mode)
+					fsync_dir_recurse(tblspc_path);
+			}
+			else
+			{
+				dirsize += scan_directory(path, de->d_name, sizeonly);
+
+				if (do_sync && path_is_symlink && !pgdata_mode)
+					fsync_dir_recurse(fn);
+			}
+		}
 	}
 
 	closedir(dir);
@@ -270,6 +342,51 @@ scan_file(const char *fn, BlockNumber segmentno)
 	}
 
 	close(f);
+}
+
+/* Subdirectories under PGDATA to scan */
+static const char	*const pgdata_subdirs[] = {"base", "global", "pg_tblspc"};
+
+static int64
+scan_pgdata(const char *basedir, bool sizeonly)
+{
+	int64	dirsize = 0;
+	int		i;
+
+	for (i = 0; i < lengthof(pgdata_subdirs); i++)
+		dirsize += scan_directory(basedir, pgdata_subdirs[i], sizeonly);
+	return dirsize;
+}
+
+static void
+validate_datadir(const char *datadir)
+{
+	struct stat st;
+	int		i;
+
+	/* Does the database directory to scan exist? */
+	if (lstat(datadir, &st) < 0)
+	{
+		if (errno == ENOENT)
+			pg_log_error("directory \"%s\" does not exist", datadir);
+		else
+			pg_log_error("could not stat directory \"%s\": %m", datadir);
+		exit(1);
+	}
+
+	/* Check whether database directory to scan is database cluster */
+	pgdata_mode = true;
+	for (i = 0; i < lengthof(pgdata_subdirs); i++)
+	{
+		char		path[MAXPGPATH];
+
+		snprintf(path, sizeof(path), "%s/%s", datadir, pgdata_subdirs[i]);
+		if (lstat(path, &st) < 0)
+		{
+			pgdata_mode = false;
+			break;
+		}
+	}
 }
 
 /* Copy and paste from src/bin/pg_checksums/pg_checksums.c */
@@ -459,23 +576,39 @@ main(int argc, char *argv[])
 	}
 
 	canonicalize_path(datadir);
+	validate_datadir(datadir);
 
 	/*
 	 * If progress status information is requested, we need to scan the
 	 * directory tree twice: once to know how much total data needs to be
 	 * processed and once to do the real work.
 	 */
-	if (showprogress)
-		total_size = scan_directory(datadir, true);
+	if (pgdata_mode)
+	{
+		if (showprogress)
+			total_size = scan_pgdata(datadir, true);
 
-	(void) scan_directory(datadir, false);
+		(void) scan_pgdata(datadir, false);
+	}
+	else
+	{
+		if (showprogress)
+			total_size = scan_directory(datadir, NULL, true);
+
+		(void) scan_directory(datadir, NULL, false);
+	}
 
 	if (showprogress)
 		progress_report(true);
 
 	/* Make the data durable on disk */
 	if (do_sync)
-		fsync_dir_recurse(datadir);
+	{
+		if (pgdata_mode)
+			fsync_pgdata(datadir, PG_VERSION_NUM);
+		else
+			fsync_dir_recurse(datadir);
+	}
 
 	printf(_("Operation completed\n"));
 	printf(_("Files scanned:  %s\n"), psprintf(INT64_FORMAT, files));
