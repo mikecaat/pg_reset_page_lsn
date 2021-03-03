@@ -13,15 +13,15 @@
 #include "storage/checksum_impl.h"
 
 static const char *progname;
-static XLogRecPtr	lsn = InvalidXLogRecPtr;
-static bool	data_checksums = false;
-static bool	do_sync = false;
+static XLogRecPtr lsn = InvalidXLogRecPtr;
+static bool data_checksums = false;
+static bool do_sync = false;
 static bool showprogress = false;
 
-static XLogRecPtr	pg_lsn_in_internal(const char *str, bool *have_error);
-static int64	scan_directory(const char *path, bool sizeonly);
-static void	scan_file(const char *fn, BlockNumber segmentno);
-static bool	skipfile(const char *fn);
+static XLogRecPtr pg_lsn_in_internal(const char *str, bool *have_error);
+static int64 scan_directory(const char *path, bool sizeonly);
+static void scan_file(const char *fn, BlockNumber segmentno);
+static bool skipfile(const char *fn);
 static void progress_report(bool finished);
 
 /*
@@ -141,7 +141,7 @@ scan_directory(const char *path, bool sizeonly)
 		if (S_ISREG(st.st_mode))
 		{
 			char		fnonly[MAXPGPATH];
-			char		*segmentpath;
+			char	   *segmentpath;
 			BlockNumber segmentno = 0;
 
 			if (skipfile(de->d_name))
@@ -361,9 +361,9 @@ main(int argc, char *argv[])
 
 	int			c;
 	int			option_index;
-	char	*datadir = NULL;
-	char	*lsn_str = NULL;
-	bool	have_error = false;
+	char	   *datadir = NULL;
+	char	   *lsn_str = NULL;
+	bool		have_error = false;
 
 	pg_logging_init(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_reset_page_lsn"));
