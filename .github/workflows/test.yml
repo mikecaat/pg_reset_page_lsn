@@ -53,7 +53,7 @@ jobs:
         pgbench -i -Idtgv -s 100 regression
         psql regression -f sql/func.sql
         pg_ctl -D ${PGDATA} stop
-        pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k
+        pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k -P
         pg_reset_page_lsn -D ${PGDATA}/global -l 0/1 --no-sync -k
         pg_checksums -D ${PGDATA} -c
         pg_ctl -D ${PGDATA} -w start

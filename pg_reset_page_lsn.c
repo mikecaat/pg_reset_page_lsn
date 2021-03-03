@@ -2,8 +2,9 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 
-#include "access/xlogdefs.h"
+#include "access/xlog_internal.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
 #include "getopt_long.h"
@@ -15,11 +16,20 @@ static const char *progname;
 static XLogRecPtr	lsn = InvalidXLogRecPtr;
 static bool	data_checksums = false;
 static bool	do_sync = false;
+static bool showprogress = false;
 
 static XLogRecPtr	pg_lsn_in_internal(const char *str, bool *have_error);
-static void	scan_directory(const char *path);
+static int64	scan_directory(const char *path, bool sizeonly);
 static void	scan_file(const char *fn, BlockNumber segmentno);
 static bool	skipfile(const char *fn);
+static void progress_report(bool finished);
+
+/*
+ * Progress status information.
+ */
+int64		total_size = 0;
+int64		current_size = 0;
+static pg_time_t last_progress_report = 0;
 
 static void
 usage(void)
@@ -32,6 +42,7 @@ usage(void)
 	printf(_("  -l, --lsn=LSN            reset LSN in relation pages\n"));
 	printf(_("  -k, --data-checksums     update checksums in relation pages\n"));
 	printf(_("  -N, --no-sync            do not wait for changes to be written safely to disk\n"));
+	printf(_("  -P, --progress           show progress information\n"));
 	printf(_("  -V, --version            output version information, then exit\n"));
 	printf(_("  -?, --help               show this help, then exit\n"));
 }
@@ -74,12 +85,13 @@ pg_lsn_in_internal(const char *str, bool *have_error)
 	return result;
 }
 
-static void
-scan_directory(const char *path)
+static int64
+scan_directory(const char *path, bool sizeonly)
 {
 	/* Copy and paste from src/include/storage/fd.h */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"
 #define PG_TEMP_FILE_PREFIX "pgsql_tmp"
+	int64		dirsize = 0;
 	DIR		   *dir;
 	struct dirent *de;
 
@@ -155,13 +167,22 @@ scan_directory(const char *path)
 					}
 				}
 			}
-			scan_file(fn, segmentno);
+
+			dirsize += st.st_size;
+
+			/*
+			 * No need to work on the file when calculating only the size of
+			 * the items in the data folder.
+			 */
+			if (!sizeonly)
+				scan_file(fn, segmentno);
 		}
 		else if (S_ISDIR(st.st_mode))
-			scan_directory(fn);
+			dirsize += scan_directory(fn, sizeonly);
 	}
 
 	closedir(dir);
+	return dirsize;
 }
 
 static void
@@ -231,12 +252,17 @@ scan_file(const char *fn, BlockNumber segmentno)
 							 blockno, fn, w, BLCKSZ);
 			exit(1);
 		}
+
+		current_size += w;
+
+		if (showprogress)
+			progress_report(false);
 	}
 
 	close(f);
 }
 
-/* Copy and paste from src/bin/pg_checksums */
+/* Copy and paste from src/bin/pg_checksums/pg_checksums.c */
 struct exclude_list_item
 {
 	const char *name;
@@ -272,6 +298,55 @@ skipfile(const char *fn)
 	return false;
 }
 
+/*
+ * Report current progress status.
+ * Copy and paste from src/bin/pg_checksums/pg_checksums.c.
+ */
+static void
+progress_report(bool finished)
+{
+	int			percent;
+	char		total_size_str[32];
+	char		current_size_str[32];
+	pg_time_t	now;
+
+	Assert(showprogress);
+
+	now = time(NULL);
+	if (now == last_progress_report && !finished)
+		return;					/* Max once per second */
+
+	/* Save current time */
+	last_progress_report = now;
+
+	/* Adjust total size if current_size is larger */
+	if (current_size > total_size)
+		total_size = current_size;
+
+	/* Calculate current percentage of size done */
+	percent = total_size ? (int) ((current_size) * 100 / total_size) : 0;
+
+	/*
+	 * Separate step to keep platform-dependent format code out of
+	 * translatable strings.  And we only test for INT64_FORMAT availability
+	 * in snprintf, not fprintf.
+	 */
+	snprintf(total_size_str, sizeof(total_size_str), INT64_FORMAT,
+			 total_size / (1024 * 1024));
+	snprintf(current_size_str, sizeof(current_size_str), INT64_FORMAT,
+			 current_size / (1024 * 1024));
+
+	fprintf(stderr, _("%*s/%s MB (%d%%) computed"),
+			(int) strlen(current_size_str), current_size_str, total_size_str,
+			percent);
+
+	/*
+	 * Stay on the same line if reporting to a terminal and we're not done
+	 * yet.
+	 */
+	fputc((!finished && isatty(fileno(stderr))) ? '\r' : '\n', stderr);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -280,6 +355,7 @@ main(int argc, char *argv[])
 		{"lsn", required_argument, NULL, 'l'},
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"no-sync", no_argument, NULL, 'N'},
+		{"progress", no_argument, NULL, 'P'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -307,7 +383,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "D:l:kN", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "D:l:kNP", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -322,6 +398,9 @@ main(int argc, char *argv[])
 				break;
 			case 'N':
 				do_sync = false;
+				break;
+			case 'P':
+				showprogress = true;
 				break;
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -370,7 +449,19 @@ main(int argc, char *argv[])
 	}
 
 	canonicalize_path(datadir);
-	scan_directory(datadir);
+
+	/*
+	 * If progress status information is requested, we need to scan the
+	 * directory tree twice: once to know how much total data needs to be
+	 * processed and once to do the real work.
+	 */
+	if (showprogress)
+		total_size = scan_directory(datadir, true);
+
+	(void) scan_directory(datadir, false);
+
+	if (showprogress)
+		progress_report(true);
 
 	/* Make the data durable on disk */
 	if (do_sync)

@@ -20,6 +20,8 @@ The following command-line options are available:
   * Update checksums of every pages in relation files.
 * -N, --no-sync
   * By default, pg_reset_page_lsn will wait for all files to be written safely to disk. This option causes pg_reset_page_lsn to return without waiting, which is faster, but means that a subsequent operating system crash can leave the updated data directory corrupt. Generally, this option is useful for testing but should not be used on a production installation.
+* -P, --progress
+  * Enable progress reporting. Turning this on will deliver a progress report while resetting page LSN.
 * -V, --version
   * Print the pg_reset_page_lsn version and exit.
 * -?, --help
