@@ -54,10 +54,17 @@ jobs:
         psql regression -f sql/func.sql
         pg_ctl -D ${PGDATA} stop
         pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k -P
-        pg_reset_page_lsn -D ${PGDATA}/global -l 0/1 --no-sync -k
+        pg_reset_page_lsn -D ${PGDATA}/global -l 0/1 -k
+        pg_reset_page_lsn -D ${PGDATA}/pg_tblspc -l 0/1 -k
         pg_checksums -D ${PGDATA} -c
         pg_ctl -D ${PGDATA} -w start
-        psql regression -c "SELECT verify_page_lsn()"
+        psql regression -c "SELECT verify_page_lsn('0/1')"
+        pgbench -c 2 -j 2 -T 10 regression
+        pg_ctl -D ${PGDATA} stop
+        pg_reset_page_lsn -D ${PGDATA} -l 0/9 -k -P
+        pg_checksums -D ${PGDATA} -c
+        pg_ctl -D ${PGDATA} -w start
+        psql regression -c "SELECT verify_page_lsn('0/9')"
         pgbench -c 2 -j 2 -T 10 regression
         pg_ctl -D ${PGDATA} stop
     - name: after_script_failure

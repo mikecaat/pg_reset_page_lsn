@@ -1,6 +1,6 @@
 CREATE EXTENSION pageinspect;
 
-CREATE OR REPLACE FUNCTION verify_page_lsn () RETURNS void AS $$
+CREATE OR REPLACE FUNCTION verify_page_lsn (expected pg_lsn) RETURNS void AS $$
 DECLARE
     pgversion INTEGER;
     fork TEXT;
@@ -22,7 +22,7 @@ BEGIN
                 SELECT * INTO hdr FROM
                     page_header(get_raw_page(rec.tbl, fork, rec.blkno::INTEGER));
             END IF;
-            IF hdr.lsn <> '0/1'::pg_lsn AND hdr.upper <> 0 THEN
+            IF hdr.lsn <> expected AND hdr.upper <> 0 THEN
                 RAISE EXCEPTION 'Invalid LSN "%" found in page % in table %',
                     hdr.lsn, rec.blkno, rec.tbl;
             END IF;
