@@ -223,6 +223,8 @@ scan_file(const char *fn, BlockNumber segmentno)
 			exit(1);
 		}
 
+		current_size += r;
+
 		/* New pages have no page lsn yet */
 		if (PageIsNew(header))
 			continue;
@@ -256,8 +258,6 @@ scan_file(const char *fn, BlockNumber segmentno)
 							 blockno, fn, w, BLCKSZ);
 			exit(1);
 		}
-
-		current_size += w;
 
 		if (showprogress)
 			progress_report(false);
