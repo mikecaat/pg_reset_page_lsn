@@ -50,7 +50,9 @@ jobs:
         make USE_PGXS=1 PG_CONFIG=${PGHOME}/bin/pg_config install
     - name: script
       run: |
-        pgbench -i -Idtgv -s 100 regression
+        mkdir -p ${PGHOME}/testts
+        psql regression -c "CREATE TABLESPACE testts LOCATION '${PGHOME}/testts'"
+        pgbench -i -Idtgv -s 100 --tablespace=testts regression
         psql regression -f sql/func.sql
         pg_ctl -D ${PGDATA} stop
         pg_reset_page_lsn -D ${PGDATA}/base -l 0/1 --no-sync -k -P
