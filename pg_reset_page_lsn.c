@@ -15,7 +15,7 @@
 static const char *progname;
 static XLogRecPtr lsn = InvalidXLogRecPtr;
 static bool data_checksums = false;
-static bool do_sync = false;
+static bool do_sync = true;
 static bool showprogress = false;
 
 static int64 files = 0;
